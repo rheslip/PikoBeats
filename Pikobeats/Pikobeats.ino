@@ -38,9 +38,14 @@
 #include <Arduino.h> 
 #include "stdio.h"
 #include "pico/stdlib.h"
+#include "hardware/gpio.h"
+#include "hardware/sync.h"
+#include "hardware/structs/ioqspi.h"
+#include "hardware/structs/sio.h"
 //#include "MIDI.h"
 #include <PWMAudio.h>
 #include "io.h"
+#include "drumpatterns.h"
 
 //#define MONITOR_CPU  // define to monitor Core 2 CPU usage on pin CPU_USE
 
@@ -74,8 +79,8 @@ uint32_t pot_timer; // reading pots too often causes noise
 #define MIN_POT_CHANGE 25 // locked pot reading must change by this in order to register
 #define MIN_COUNTS 8  // unlocked pot must change by this in order to register
 #define POT_AVERAGING 20 // analog sample averaging count 
-#define POT_MIN 5   // A/D may not read min value of 0 so use a bit larger value for map() function
-#define POT_MAX 1015 // A/D may not read max value of 1023 so use a bit smaller value for map() function
+#define POT_MIN 4   // A/D may not read min value of 0 so use a bit larger value for map() function
+#define POT_MAX 1019 // A/D may not read max value of 1023 so use a bit smaller value for map() function
 
 // flag all pot values as locked ie they have to change more than MIN_POT_CHANGE to register
 void lockpots(void) {
@@ -127,30 +132,57 @@ int current_track=0; // track we are working on
 struct voice_t {
   int16_t sample;   // index of the sample structure in sampledefs.h
   int16_t level;   // 0-1000 for legacy reasons
+  uint32_t sampleindex; // 20:12 fixed point index into the sample array
+  uint16_t sampleincrement; // 1:12 fixed point sample step for pitch changes 
+  bool isPlaying;  // true when sample is playing
 } voice[NUM_VOICES] = {
   0,      // default voice 0 assignment - typically a kick but you can map them any way you want
   250,  // initial level
+  0,    // sampleindex
+  4096, // initial pitch step - normal pitch
+  false, // sample not playing
   
   1,      // default voice 1 assignment 
-  250, 
-  
+  250,
+  0,    // sampleindex
+  4096, // initial pitch step - normal pitch
+  false, // sample not playing
+
   2,    // default voice 2 assignment 
   250, // level
-  
+  0,    // sampleindex
+  4096, // initial pitch step - normal pitch
+  false, // sample not playing
+
   3,    // default voice 3 assignment 
   250, // level
+  0,    // sampleindex
+  4096, // initial pitch step - normal pitch
+  false, // sample not playing
 
   4,    // default voice 4 assignment 
   250,  // level
- 
+  0,    // sampleindex
+  4096, // initial pitch step - normal pitch
+  false, // sample not playing
+
   5,    // default voice 5 assignment 
-  250, 
+  250,  // level
+  0,    // sampleindex
+  4096, // initial pitch step - normal pitch
+  false, // sample not playing
 
   6,    // default voice 6 assignment 
   250,  // level
+  0,    // sampleindex
+  4096, // initial pitch step - normal pitch
+  false, // sample not playing
 
   10,    // default voice 7 assignment 
- 250, 
+  250,   // level
+  0,    // sampleindex
+  4096, // initial pitch step - normal pitch 
+  false, // sample not playing
 };  
 
 
@@ -167,10 +199,10 @@ struct voice_t {
 // wave2header also creates "samples.h" which #includes all the generated header files
 
 
-//#include "808samples/samples.h" // 808 sounds
+//include "808samples/samples.h" // 808 sounds
 //#include "Angular_Jungle_Set/samples.h"   // Jungle soundfont set - great!
-//#include "Angular_Techno_Set/samples.h"   // Techno
-#include "Acoustic3/samples.h"   // acoustic drums
+#include "Angular_Techno_Set/samples.h"   // Techno
+//#include "Acoustic3/samples.h"   // acoustic drums
 //#include "Pico_kit/samples.h"   // assorted samples
 //#include "testkit/samples.h"   // small kit for testing
 //#include "Trashrez/samples.h"
@@ -265,6 +297,14 @@ void display_value(int16_t value){
   }
   display_timer=millis();
 }
+
+// rotate trigger pattern
+uint16_t rightRotate(int shift, uint16_t value, uint8_t pattern_length) {
+  uint16_t mask = ((1 << pattern_length) - 1);
+  value &= mask;
+  return ((value >> shift) | (value << (pattern_length - shift))) & mask;
+}
+
 // main core setup
 void setup() {      
 
@@ -300,6 +340,7 @@ void setup() {
   pinMode(LED6,OUTPUT);
   pinMode(LED7,OUTPUT);
 
+
 // set up Pico PWM audio output
 	DAC.setBuffers(4, 128); // DMA buffers 
 	DAC.begin(SAMPLERATE);
@@ -315,11 +356,13 @@ void setup() {
   MIDI.begin(MIDI_CHANNEL_OMNI);
   */
 
-  seq[0].trigger=euclid(16,4,0); // start out with four on the floor
+  seq[0].trigger=0b1000100010001000;
 
   display_value(NUM_SAMPLES); // show number of samples on the display
 
 }
+
+
 
 
 // main core handles UI
@@ -337,12 +380,23 @@ void loop() {
           bpm=newbpm; // set BPM
           display_value(bpm-50); // show BPM Pikocore style
         }
+        if(!potlock[1]) voice[current_track].sampleincrement=(uint16_t)(map(potvalue[1],POT_MIN,POT_MAX,2048,8192)); // change sample pitch if pot has moved enough  
         if(!potlock[2]) voice[current_track].level=(int16_t)(map(potvalue[2],POT_MIN,POT_MAX,0,1000)); // change sample volume level if pot has moved enough   
       }
       else { // a track button is pressed
         current_track=i; // keypress selects track we are working on
-        if ((!potlock[1]) || (!potlock[2])) seq[i].trigger=euclid(16,map(potvalue[1],POT_MIN,POT_MAX,0,MAX_SEQ_STEPS),map(potvalue[2],POT_MIN,POT_MAX,0,MAX_SEQ_STEPS-1)); // set track euclidean triggers if either pot has moved enough
-        if(!potlock[0]) voice[i].sample=(int16_t)(map(potvalue[0],POT_MIN,POT_MAX,0,NUM_SAMPLES-1)); // change sample if pot has moved enough
+        //if ((!potlock[1]) || (!potlock[2])) seq[i].trigger=euclid(16,map(potvalue[1],POT_MIN,POT_MAX,0,MAX_SEQ_STEPS),map(potvalue[2],POT_MIN,POT_MAX,0,MAX_SEQ_STEPS-1)); // set track euclidean triggers if either pot has moved enough
+        if (!potlock[1]) seq[i].trigger= drumpatterns[map(potvalue[1],POT_MIN,POT_MAX,0,NUMPATTERNS-1)]; // look up drum trigger pattern
+        if (!potlock[2]) seq[i].trigger= rightRotate(map(potvalue[2],POT_MIN,POT_MAX,0,MAX_SEQ_STEPS-1),seq[i].trigger,16); // rotate trigger pattern
+        if(!potlock[0]) { // change sample if pot has moved enough
+          int16_t newsample=(int16_t) map(potvalue[0],POT_MIN,POT_MAX,0,NUM_SAMPLES-1); // precompute new sample
+          if (voice[i].sample != newsample) { 
+            rp2040.idleOtherCore(); // don't mess with sample parameters while other core is running
+            //voice[i].sample].sampleindex=sample[voice[i].sample].samplesize; // stop old one if its playing
+            voice[i].sample = newsample;
+            rp2040.resumeOtherCore(); // enable sample processing again
+          }
+        }
       }
     }
   }
@@ -379,28 +433,51 @@ void setup1() {
 
 // second core calculates samples and sends to DAC
 void loop1(){
-  int32_t samplesum=0;
-  int32_t index,phase;
-  int16_t samp0,samp1,delta;
-  
-  for (int i=0; i< NUM_SAMPLES;++i) {  // look for samples that are playing, scale their volume, and add them up
-// broken integer pitch interpolation code for timing purposes
-// if stereo you have to do this twice but you can reuse the interpolation values
+  int32_t newsample,samplesum=0;
+  uint32_t index;
+  int16_t samp0,samp1,delta,tracksample;
+
+ // oct 22 2023 resampling code
+// to change pitch we step through the sample by .5 rate for half pitch up to 2 for double pitch
+// sample.sampleindex is a fixed point 20:12 fractional number
+// we step through the sample array by sampleincrement - sampleincrement is treated as a 1 bit integer and a 12 bit fraction
+// for sample lookup sample.sampleindex is converted to a 20 bit integer which limits the max sample size to 2**20 or about 1 million samples, about 45 seconds 
+  // oct 24/2023 - scan through voices instead of sample array
+  // faster because there are only 8 voices vs typically 45 or more samples
 /*
-    samp0= sample[i].samplearray[index>>20]; // starting sample
-    index+=phase; // 20:12 integer:fraction allows for 2**20 samples // index amd phase have to be per sample. phase=1<<12 is normal playback
-    samp1=sample[i].samplearray[index>>20]; // next sample
-    delta=samp1-samp0;
-    samp0=samp0+delta*(index>>20/4096); // not right but Ok for timing
-   if (sample[i].sampleindex < sample[i].samplesize) samplesum+=(int32_t)(samp0*sample[i].play_volume);  // 
- */
-// original code - complex expression seems to slow the code down somewhat vs above
-    if (sample[i].sampleindex < sample[i].samplesize) samplesum+=(int32_t)(sample[i].samplearray[sample[i].sampleindex++]*sample[i].play_volume);  // thats a mouthful!
- 
+  for (int track=0; track< NTRACKS;++track) {  // look for samples that are playing, scale their volume, and add them up
+    tracksample=voice[track].sample; // precompute for a little more speed below
+    index=sample[tracksample].sampleindex>>12; // get the integer part of the sample increment
+    if (index < sample[tracksample].samplesize) { // if sample is playing, do interpolation   
+      samp0=sample[tracksample].samplearray[index]; // get the first sample to interpolate
+      samp1=sample[tracksample].samplearray[index+1];// get the second sample
+      delta=samp1-samp0;
+      newsample=(int32_t)samp0+((int32_t)delta*((int32_t)sample[tracksample].sampleindex & 0x0fff))/4096; // interpolate between the two samples
+      //samplesum+=((int32_t)samp0+(int32_t)delta*(sample[i].sampleindex & 0x0fff)/4096)*sample[i].play_volume;
+      samplesum+=newsample*sample[tracksample].play_volume;
+      sample[tracksample].sampleindex+=voice[track].sampleincrement; // add step increment
+    }
   }
+  */
+  for (int track=0; track< NTRACKS;++track) {  // look for samples that are playing, scale their volume, and add them up
+    tracksample=voice[track].sample; // precompute for a little more speed below
+    index=voice[track].sampleindex>>12; // get the integer part of the sample increment
+    if (index >= sample[tracksample].samplesize) voice[track].isPlaying=false; // have we played the whole sample?
+    if (voice[track].isPlaying) { // if sample is still playing, do interpolation   
+      samp0=sample[tracksample].samplearray[index]; // get the first sample to interpolate
+      samp1=sample[tracksample].samplearray[index+1];// get the second sample
+      delta=samp1-samp0;
+      newsample=(int32_t)samp0+((int32_t)delta*((int32_t)voice[track].sampleindex & 0x0fff))/4096; // interpolate between the two samples
+      //samplesum+=((int32_t)samp0+(int32_t)delta*(sample[i].sampleindex & 0x0fff)/4096)*sample[i].play_volume;
+      samplesum+=(newsample*(127*voice[track].level))/1000;
+      voice[track].sampleindex+=voice[track].sampleincrement; // add step increment
+    }
+  }
+
   samplesum=samplesum>>7;  // adjust for play_volume multiply above
   if  (samplesum>32767) samplesum=32767; // clip if sample sum is too large
   if  (samplesum<-32767) samplesum=-32767;
+
 
 
 #ifdef MONITOR_CPU  
