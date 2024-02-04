@@ -38,3 +38,4 @@ See the tutorial video and notes in the code for instructions on how to change t
 First version Oct 19 2023
 
 V 1.1 Oct 25 2023 - added more drum patterns and ability to change sample pitch
+V 1.2 Feb 2024 - added step clock out on GPIO pin 21 per user request
