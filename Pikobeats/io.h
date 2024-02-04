@@ -63,6 +63,8 @@
 #define LED6 18
 #define LED7 19
 
+#define CLOCKOUT 21
+
 // MIDI serial port pins - not really MIDI but the serial port is exposed on the first two jacks
 #define MIDIRX 1
 #define MIDITX 0

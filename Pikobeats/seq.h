@@ -6,6 +6,7 @@
 #define TEMPO    120 // default tempo
 #define PPQN 24  // clocks per quarter note
 #define NOTE_DURATION (PPQN/6) // sixteenth note duration
+#define CLOCKPULSE 15 // duration of clock out pulse
 int16_t bpm = TEMPO;
 int32_t lastMIDIclock; // timestamp of last MIDI clock
 int16_t MIDIclocks=PPQN*2; // midi clock counter
@@ -76,6 +77,8 @@ void do_clocks(void) {
   if ((millis() - clocktimer) > clockperiod) {
     clocktimer=millis(); 
     clocktick(clockperiod);
+    digitalWrite(CLOCKOUT,1); // external clock high
   }
+  if ((millis() - clocktimer) > CLOCKPULSE) digitalWrite(CLOCKOUT,0); // external clock low
 }
 

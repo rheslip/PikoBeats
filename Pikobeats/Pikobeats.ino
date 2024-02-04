@@ -33,6 +33,7 @@
 // Feb 11/19 - sped up encoder/trigger ISR so it will catch 1ms pulses from Grids
 // Jan 2023 - ported code to Pi Pico so I can use it on a 16mb flash version
 // oct 2023 - ported to Pikocore Hardware and converted to a simple beatbox
+// Feb 2024 - added step clock out  
 
 
 #include <Arduino.h> 
@@ -200,8 +201,8 @@ struct voice_t {
 
 
 //include "808samples/samples.h" // 808 sounds
-//#include "Angular_Jungle_Set/samples.h"   // Jungle soundfont set - great!
-#include "Angular_Techno_Set/samples.h"   // Techno
+#include "Angular_Jungle_Set/samples.h"   // Jungle soundfont set - great!
+//#include "Angular_Techno_Set/samples.h"   // Techno
 //#include "Acoustic3/samples.h"   // acoustic drums
 //#include "Pico_kit/samples.h"   // assorted samples
 //#include "testkit/samples.h"   // small kit for testing
@@ -340,6 +341,7 @@ void setup() {
   pinMode(LED6,OUTPUT);
   pinMode(LED7,OUTPUT);
 
+  pinMode(CLOCKOUT,OUTPUT);
 
 // set up Pico PWM audio output
 	DAC.setBuffers(4, 128); // DMA buffers 
